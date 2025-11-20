@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       port:
-        description: "Port where the app will run (8000-9000)"
+        description: "Port where app will run"
         required: true
       domain:
-        description: "Custom domain or tunnel url (optional)"
+        description: "Domain or tunnel (optional)"
         required: false
 
 jobs:
@@ -25,25 +25,28 @@ jobs:
 
       - name: Copy project to EC2
         run: |
-          rsync -avz -e "ssh -o StrictHostKeyChecking=no" \
-            ./ ubuntu@${{ secrets.EC2_IP }}:/home/ubuntu/autopilot-app-${{ github.event.inputs.port }}
+          rsync -avz -e "ssh -o StrictHostKeyChecking=no" ./ \
+            ubuntu@${{ secrets.EC2_IP }}:/home/ubuntu/autopilot-app-${{ github.event.inputs.port }}
 
-      - name: Deploy on EC2
+      - name: Deploy on EC2 (NO STOPPING OTHER CONTAINERS)
         run: |
           ssh -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_IP }} << 'EOF'
-            cd /home/ubuntu/autopilot-app-${{ github.event.inputs.port }}
-            git pull || true
 
+            cd /home/ubuntu/autopilot-app-${{ github.event.inputs.port }}
+
+            echo "Building Docker image..."
             docker build -t autopilot-app:${{ github.event.inputs.port }} .
 
+            echo "Stopping only container on SAME PORT if exists"
             docker stop autopilot-${{ github.event.inputs.port }} || true
             docker rm autopilot-${{ github.event.inputs.port }} || true
 
+            echo "Starting new container on port ${{ github.event.inputs.port }}"
             docker run -d \
               --name autopilot-${{ github.event.inputs.port }} \
               -p ${{ github.event.inputs.port }}:${{ github.event.inputs.port }} \
               -e PORT=${{ github.event.inputs.port }} \
               autopilot-app:${{ github.event.inputs.port }}
 
-            echo "Deployment finished on port ${{ github.event.inputs.port }}"
+            echo "Deployment finished!"
           EOF
