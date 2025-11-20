@@ -1,13 +1,13 @@
-name: Deploy via SSH to EC2
+name: Deploy to EC2 (Autopilot)
 
 on:
   workflow_dispatch:
     inputs:
       port:
-        description: "Port to run the container"
+        description: "Port where the app will run (8000-9000)"
         required: true
       domain:
-        description: "Domain to configure (optional)"
+        description: "Custom domain or tunnel url (optional)"
         required: false
 
 jobs:
@@ -15,18 +15,35 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: SSH to EC2 and deploy
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Setup SSH key
+        uses: webfactory/ssh-agent@v0.9.0
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            sudo bash /usr/local/bin/deploy_helper.sh \
-            "${{ github.repository }}" \
-            "${{ github.ref_name }}" \
-            "${{ github.event.inputs.port }}" \
-            "${{ github.event.inputs.domain }}"
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Copy project to EC2
+        run: |
+          rsync -avz -e "ssh -o StrictHostKeyChecking=no" \
+            ./ ubuntu@${{ secrets.EC2_IP }}:/home/ubuntu/autopilot-app-${{ github.event.inputs.port }}
+
+      - name: Deploy on EC2
+        run: |
+          ssh -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_IP }} << 'EOF'
+            cd /home/ubuntu/autopilot-app-${{ github.event.inputs.port }}
+            git pull || true
+
+            docker build -t autopilot-app:${{ github.event.inputs.port }} .
+
+            docker stop autopilot-${{ github.event.inputs.port }} || true
+            docker rm autopilot-${{ github.event.inputs.port }} || true
+
+            docker run -d \
+              --name autopilot-${{ github.event.inputs.port }} \
+              -p ${{ github.event.inputs.port }}:${{ github.event.inputs.port }} \
+              -e PORT=${{ github.event.inputs.port }} \
+              autopilot-app:${{ github.event.inputs.port }}
+
+            echo "Deployment finished on port ${{ github.event.inputs.port }}"
+          EOF
