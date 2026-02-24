@@ -67,5 +67,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(80, () =>
-  console.log("✨ Beautiful Autopilot Test Project running on port 80 ✨")
+  console.log("Beautiful Autopilot Test Project running on port 80 ")
 );
