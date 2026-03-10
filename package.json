@@ -9,3 +9,262 @@
     "express": "^4.18.2"
   }
 }
+provider "aws" {
+  region = var.region
+}
+
+resource "aws_instance" "app_server" {
+  ami           = var.ami
+  instance_type = var.instance_type
+
+  tags = {
+    Name = "autopilot-instance"
+  }
+}
+provider "aws" {
+  region = var.region
+}
+
+############################
+# VPC
+############################
+
+resource "aws_vpc" "autopilot_vpc" {
+  cidr_block = "10.0.0.0/16"
+
+  tags = {
+    Name = "autopilot-vpc"
+  }
+}
+
+############################
+# Internet Gateway
+############################
+
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.autopilot_vpc.id
+}
+
+############################
+# Public Subnets
+############################
+
+resource "aws_subnet" "public_subnet_1" {
+  vpc_id            = aws_vpc.autopilot_vpc.id
+  cidr_block        = "10.0.1.0/24"
+  availability_zone = "ap-south-1a"
+}
+
+resource "aws_subnet" "public_subnet_2" {
+  vpc_id            = aws_vpc.autopilot_vpc.id
+  cidr_block        = "10.0.2.0/24"
+  availability_zone = "ap-south-1b"
+}
+
+############################
+# Private App Subnets
+############################
+
+resource "aws_subnet" "app_subnet_1" {
+  vpc_id            = aws_vpc.autopilot_vpc.id
+  cidr_block        = "10.0.3.0/24"
+  availability_zone = "ap-south-1a"
+}
+
+resource "aws_subnet" "app_subnet_2" {
+  vpc_id            = aws_vpc.autopilot_vpc.id
+  cidr_block        = "10.0.4.0/24"
+  availability_zone = "ap-south-1b"
+}
+
+############################
+# Private DB Subnets
+############################
+
+resource "aws_subnet" "db_subnet_1" {
+  vpc_id            = aws_vpc.autopilot_vpc.id
+  cidr_block        = "10.0.5.0/24"
+  availability_zone = "ap-south-1a"
+}
+
+resource "aws_subnet" "db_subnet_2" {
+  vpc_id            = aws_vpc.autopilot_vpc.id
+  cidr_block        = "10.0.6.0/24"
+  availability_zone = "ap-south-1b"
+}
+
+############################
+# Route Table for Public
+############################
+
+resource "aws_route_table" "public_rt" {
+  vpc_id = aws_vpc.autopilot_vpc.id
+}
+
+resource "aws_route" "internet_access" {
+  route_table_id         = aws_route_table.public_rt.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.igw.id
+}
+
+############################
+# NAT Gateway
+############################
+
+resource "aws_eip" "nat_eip" {}
+
+resource "aws_nat_gateway" "nat" {
+  allocation_id = aws_eip.nat_eip.id
+  subnet_id     = aws_subnet.public_subnet_1.id
+}
+
+############################
+# Security Groups
+############################
+
+resource "aws_security_group" "alb_sg" {
+  name   = "alb-sg"
+  vpc_id = aws_vpc.autopilot_vpc.id
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "app_sg" {
+  name   = "app-sg"
+  vpc_id = aws_vpc.autopilot_vpc.id
+
+  ingress {
+    from_port       = 8080
+    to_port         = 8080
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+}
+
+resource "aws_security_group" "db_sg" {
+  name   = "db-sg"
+  vpc_id = aws_vpc.autopilot_vpc.id
+
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.app_sg.id]
+  }
+}
+
+############################
+# Load Balancer
+############################
+
+resource "aws_lb" "app_lb" {
+  name               = "autopilot-alb"
+  load_balancer_type = "application"
+  subnets = [
+    aws_subnet.public_subnet_1.id,
+    aws_subnet.public_subnet_2.id
+  ]
+
+  security_groups = [aws_security_group.alb_sg.id]
+}
+
+############################
+# Target Group
+############################
+
+resource "aws_lb_target_group" "app_tg" {
+  port     = 8080
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.autopilot_vpc.id
+}
+
+############################
+# Listener
+############################
+
+resource "aws_lb_listener" "listener" {
+  load_balancer_arn = aws_lb.app_lb.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.app_tg.arn
+  }
+}
+
+############################
+# Launch Template
+############################
+
+resource "aws_launch_template" "app_template" {
+
+  name_prefix   = "autopilot-app"
+  image_id      = var.ami
+  instance_type = var.instance_type
+
+  network_interfaces {
+    security_groups = [aws_security_group.app_sg.id]
+  }
+
+}
+
+############################
+# Auto Scaling Group
+############################
+
+resource "aws_autoscaling_group" "app_asg" {
+
+  desired_capacity = 2
+  max_size         = 5
+  min_size         = 2
+
+  vpc_zone_identifier = [
+    aws_subnet.app_subnet_1.id,
+    aws_subnet.app_subnet_2.id
+  ]
+
+  launch_template {
+    id      = aws_launch_template.app_template.id
+    version = "$Latest"
+  }
+
+}
+
+############################
+# RDS Database
+############################
+
+resource "aws_db_subnet_group" "db_subnet_group" {
+
+  name = "autopilot-db-subnet"
+
+  subnet_ids = [
+    aws_subnet.db_subnet_1.id,
+    aws_subnet.db_subnet_2.id
+  ]
+
+}
+
+resource "aws_db_instance" "database" {
+
+  allocated_storage = 20
+  engine            = "postgres"
+  instance_class    = "db.t3.micro"
+
+  db_name  = "autopilot"
+  username = "admin"
+  password = "securepassword"
+
+  db_subnet_group_name = aws_db_subnet_group.db_subnet_group.name
+  vpc_security_group_ids = [
+    aws_security_group.db_sg.id
+  ]
+
+  skip_final_snapshot = true
+}
